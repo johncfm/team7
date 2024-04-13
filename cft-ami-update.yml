@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Update SSM parameter with latest AMI ID based on wildcard match
+
+Parameters:
+  AMINameWildcard:
+    Type: String
+    Description: The wildcard pattern to match the AMI names (e.g., my-ami-name-*)
+
+Resources:
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaSSMUpdatePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:DescribeImages'
+                  - 'ssm:PutParameter'
+                Resource: '*'
+
+  UpdateSSMParameterFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+
+          def lambda_handler(event, context):
+              ami_name_wildcard = event['AMINameWildcard']
+
+              # Create AWS EC2 client
+              ec2_client = boto3.client('ec2')
+
+              # Describe images matching the wildcard
+              images_response = ec2_client.describe_images(
+                  Filters=[
+                      {
+                          'Name': 'name',
+                          'Values': [ami_name_wildcard]
+                      }
+                  ]
+              )
+
+              # Extract the latest image
+              images = sorted(images_response['Images'], key=lambda x: x['CreationDate'], reverse=True)
+              if not images:
+                  print("No matching AMI found.")
+                  return
+
+              latest_image = images[0]
+              latest_ami_id = latest_image['ImageId']
+
+              # Update the SSM parameter
+              ssm_client = boto3.client('ssm')
+              ssm_client.put_parameter(
+                  Name='ec2/ami/latest',
+                  Description='Latest AMI ID',
+                  Value=latest_ami_id,
+                  Type='String',
+                  Overwrite=True
+              )
+
+              print(f"Updated parameter 'ec2/ami/latest' with latest AMI ID: {latest_ami_id}")
+
+      Runtime: python3.8
+
+  UpdateSSMParameterRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Description: 'Trigger Lambda when new AMI is created'
+      EventPattern:
+        source:
+          - 'aws.ec2'
+        detail-type:
+          - 'AWS API Call via CloudTrail'
+        detail:
+          eventSource:
+            - 'ec2.amazonaws.com'
+          eventName:
+            - 'CreateImage'
+      Targets:
+        - Arn: !GetAtt UpdateSSMParameterFunction.Arn
+          Id: 'TargetFunctionV1'
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt UpdateSSMParameterFunction.Arn
