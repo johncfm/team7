@@ -1,5 +1,5 @@
 {
   "Parameters": {
-    "AMINameWildcard": "amzn2-ami-kernel-*-hvm-*"
+    "AMINameWildcard": "amzn2-ami-kernel-*"
   }
 }
